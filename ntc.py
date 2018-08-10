@@ -1,9 +1,9 @@
 import piplates.DAQCplate as DAQC
 import time, math, os, datetime
 import RPi.GPIO as GPIO
-import dht11
 import dewpoint_cal
 from influxdb import InfluxDBClient
+import Adafruit_DHT
 
 # initialize GPIO
 #GPIO.setwarnings(False)
@@ -17,9 +17,6 @@ sleep_time = 1  # (s)
 steinhart = 0  # (degrees C)
 dew_point = 0
 t0 = time.time()
-
-# read data using pin 17 (this is GPIO pin name!!)
-instance = dht11.DHT11(pin=17)
 
 now = datetime.datetime.now()
 year = now.year
@@ -41,8 +38,8 @@ output_file = 'ntc_%d-%d-%d_%d-%d.out' % (year, month, day, hour, min)
 # Connect to DB, us admin, pw '', db 'temps'
 client = InfluxDBClient('localhost', 8086, 'admin', '', 'readings')
 
-result = instance.read()
-humidity_old = result.humidity
+# DHT22 for 22, GPIO17 for 17
+humidity_old, dht_temp_old = Adafruit_DHT.read(Adafruit_DHT.DHT22, 17)
 
 # Start main loop
 while True:
@@ -71,25 +68,29 @@ while True:
         temps.append(temp)
 
     now = time.time()
-    result = instance.read()
-    if result.humidity == 0:
-        result.humidity = humidity_old
+    humidity, dht_temp = Adafruit_DHT.read(Adafruit_DHT.DHT22, 17)
+    if type(humidity) is not float:
+        humidity = humidity_old
+        dht_temp = dht_temp_old
     else:
-        result_old = result.humidity
-	
+        humidity_old = humidity
+        dht_temp_old = dht_temp
 
-    ambient_temp = temps[4]
+
+    ambient_temp = dht_temp
     dew_point_old = dew_point
-    dew_point = dewpoint_cal.dewpoint_approximation(ambient_temp, result.humidity)
+    dew_point = dewpoint_cal.dewpoint_approximation(ambient_temp, humidity)
     if dew_point == 999:
         dew_point = dew_point_old
 
+    '''
     with open(os.path.join(out_subdir,output_file), 'a', buffering=20*(1024**2)) as outFile:
         outFile.write("%5.1f,%5.1f,%5.1f,%5.1f,%5.1f, %5.1f,%5.1f,%5.1f \n" % (now-t0,temps[0], temps[1], temps[2], temps[3], temps[4], result.humidity, dew_point))
     with open(output_file_single, 'w') as out_file_single:
         out_file_single.write("%5.1f,%5.1f,%5.1f,%5.1f,%5.1f,%5.1f,%5.1f,%5.1f " % (now-t0,temps[0], temps[1], temps[2], temps[3], temps[4], result.humidity, dew_point))
+    '''
 
-    print("%5.1f,%5.1f,%5.1f,%5.1f,%5.1f,%5.1f, rh.:%5.0f %%, Dp.:%5.1f C" % (now-t0,temps[0], temps[1], temps[2], temps[3], temps[4], result.humidity, dew_point))
+    print("%5.1f,%5.1f,%5.1f,%5.1f,%5.1f,%5.1f, rh.:%5.1f %%, dht_temp:%5.1f, Dp.:%5.1f C" % (now-t0,temps[0], temps[1], temps[2], temps[3], temps[4], humidity, dht_temp, dew_point))
 
     # Write temps to DB for grafana
     json_body = [
@@ -105,11 +106,12 @@ while True:
                 "ntc3": float(temps[2]),
                 "ntc4": float(temps[3]),
                 "ntc5": float(temps[4]),
+                "dht_ntc": float(dht_temp),
                 "dewpoint": float(dew_point),
-		"humidity": float(result.humidity)
+		        "humidity": float(humidity)
             }
         }
     ]
     status = client.write_points(json_body)
-    print(status)
+    print('DB check: ', status)
     time.sleep(sleep_time)
